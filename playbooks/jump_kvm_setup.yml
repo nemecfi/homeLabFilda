@@ -40,6 +40,7 @@
           - wget
           - gnupg
           - mariadb-server
+          - python3-pymysql
         state: present
 
     - name: Instalace Ansible
@@ -76,22 +77,25 @@
         state: started
         enabled: yes
 
-    - name: Nastaveni root hesla pro MariaDB
+    - name: Nastavení root hesla pro MariaDB
       mysql_user:
         name: root
         password: "{{ vault_mariadb_root_password }}"
         host_all: yes
         state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+      ignore_errors: yes
       no_log: true
 
-    - name: Vytvoreni databaze pro Semaphore
+    - name: Vytvoření databáze pro Semaphore
       mysql_db:
         name: "{{ semaphore_database }}"
         state: present
         login_user: root
         login_password: "{{ vault_mariadb_root_password }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
 
-    - name: Vytvoreni usera MariaDB pro Semaphore
+    - name: Vytvoření uživatele MariaDB pro Semaphore
       mysql_user:
         name: "{{ semaphore_db_user }}"
         password: "{{ semaphore_db_password }}"
@@ -99,7 +103,7 @@
         state: present
         login_user: root
         login_password: "{{ vault_mariadb_root_password }}"
-      no_log: true
+        login_unix_socket: /var/run/mysqld/mysqld.sock
 
     # Instalace Semaphore
     - name: Vytvoreni usera Semaphore
@@ -143,29 +147,37 @@
 
     - name: Vytvoreni semaphore configraku
       template:
-        src: templates/semaphore-config.json.j2
+        src: ../templates/semaphore-config.json.j2
         dest: "{{ semaphore_config_path }}/config.json"
         owner: "{{ semaphore_user }}"
         group: "{{ semaphore_group }}"
         mode: '0644'
       notify: restart semaphore
-
+    # Nefunguje, musi se opravit
     - name: Nastaveni Semaphore
-      shell: |
-        /usr/local/bin/semaphore setup --config {{ semaphore_config_path }}/config.json << EOF
-        {{ semaphore_db_user }}
-        {{ semaphore_db_password }}
-        {{ semaphore_database }}
-        127.0.0.1:3306
-        {{ semaphore_admin_user }}
-        {{ semaphore_admin_email }}
-        {{ semaphore_admin_password }}
-        EOF
+      expect:
+        command: sudo -u {{ semaphore_user }} /usr/local/bin/semaphore setup --config {{ semaphore_config_path }}/config.json
+        responses:
+          '\(default 1\):': '1'
+          'db Hostname \(default 127.0.0.1:3306\):': '127.0.0.1:3306'
+          'db User \(default root\):': '{{ semaphore_db_user }}'
+          'db Password:': '{{ semaphore_db_password }}'
+          'db Name \(default semaphore\):': '{{ semaphore_database }}'
+          'Playbook path \(default /tmp/semaphore\):': '/tmp/semaphore'
+          'Public URL \(optional.*\):': ''
+          'Enable email alerts\? \(yes/no\) \(default no\):': 'no'
+          'Enable telegram alerts\? \(yes/no\) \(default no\):': 'no'
+          'Enable slack alerts\? \(yes/no\) \(default no\):': 'no'
+          'Enable Rocket.Chat alerts\? \(yes/no\) \(default no\):': 'no'
+          'Enable Microsoft Team Channel alerts\? \(yes/no\) \(default no\):': 'no'
+          'Enable LDAP authentication\? \(yes/no\) \(default no\):': 'no'
+          'Admin username:': '{{ semaphore_admin_user }}'
+          'Admin password:': '{{ semaphore_admin_password }}'
+          'Admin email:': '{{ semaphore_admin_email }}'
+          'Confirm admin password:': '{{ semaphore_admin_password }}'
       args:
         creates: "{{ semaphore_config_path }}/.setup_complete"
-      become: yes
-      become_user: "{{ semaphore_user }}"
-      no_log: true
+      # no_log: true
 
     - name: Vytvoreni sluzby pro semaphore
       copy:
