@@ -1,5 +1,7 @@
+---
+# ansible-playbook -i inventory/kvm_inventory -b -u filda --ask-pass --ask-become-pass playbooks/jump_kvm_setup.yml --vault-password-file vaultPassword --extra-vars "@vault.yml"
 - name: Create kvm vm
-  hosts: all
+  hosts: kvm_hypervizor
   become: true
   vars:
     vm_name: "fvm01"

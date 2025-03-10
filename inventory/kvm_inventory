@@ -1,0 +1,5 @@
+[kvm_hypervizor]
+192.168.0.210
+
+[kvm_jump_server]
+192.168.0.211

@@ -1,7 +1,7 @@
 ---
-# ansible-playbook -i inventory/kvm_host -b -u filda --ask-pass --ask-become-pass playbooks/kvm_setup.yml --vault-password-file vaultPassword --extra-vars "@vault.yml"
+# ansible-playbook -i inventory/kvm_inventory -b -u filda --ask-pass --ask-become-pass playbooks/jump_kvm_setup.yml --vault-password-file vaultPassword --extra-vars "@vault.yml"
 - name: Konfigurace jump serveru s Ansible a Semaphore
-  hosts: jump_server
+  hosts: kvm_jump_server
   become: yes
   vars:
     semaphore_version: "2.12.17"
@@ -9,7 +9,7 @@
     semaphore_db_path: /var/lib/semaphore
     semaphore_user: semaphore
     semaphore_group: semaphore
-    ansible_config_repo: "https://github.com/username/ansible-config.git"  # Změňte na váš Git repozitář
+    ansible_config_repo: "https://github.com/nemecfi/homeLabFilda.git"  # Změňte na váš Git repozitář
     ansible_config_dir: /opt/git
     semaphore_admin_user: admin
     semaphore_admin_password: "{{ vault_semaphore_admin_password }}"
@@ -24,7 +24,7 @@
         update_cache: yes
         cache_valid_time: 3600
 
-    - name: Instalace závislostí
+    - name: Instalace balicku
       apt:
         name:
           - git
@@ -42,55 +42,41 @@
           - mariadb-server
         state: present
 
-    # Konfigurace Ansible
-    - name: Přidání Ansible PPA repozitáře
-      apt_repository:
-        repo: ppa:ansible/ansible
-
-    - name: Instalace Ansible přes apt
+    - name: Instalace Ansible
       apt:
-        name: ansible
+        name:
+          - ansible
+          - ansible-core
+          - python3-pip
         state: latest
         update_cache: yes
 
-    - name: Vytvoření adresáře pro Ansible konfiguraci
+    - name: Vytvoreni slozky pro ansible
       file:
         path: "{{ ansible_config_dir }}"
         state: directory
         mode: '0755'
 
-    - name: Klonování repozitáře s Ansible konfigurací
+    - name: Klonovani repa z gitu
       git:
         repo: "{{ ansible_config_repo }}"
         dest: "{{ ansible_config_dir }}"
         update: yes
 
-    - name: Nastavení proměnné prostředí ANSIBLE_CONFIG globálně
+    - name: Nastaveni promenne pro ansible CFG
       lineinfile:
         path: "/etc/environment"
-        line: "ANSIBLE_CONFIG={{ ansible_config_dir }}/ansible.cfg"
+        line: "ANSIBLE_CONFIG={{ ansible_config_dir }}/homeLabFilda/ansible.cfg"
         state: present
 
-    - name: Vytvoření adresáře pro Ansible log
-      file:
-        path: /var/log
-        state: directory
-        mode: '0755'
-
-    - name: Vytvoření Ansible log souboru
-      file:
-        path: /var/log/ansible.log
-        state: touch
-        mode: '0644'
-
     # Konfigurace MariaDB pro Semaphore
-    - name: Zajištění, že MariaDB služba běží
+    - name: Kontora sluzby mariadb
       service:
         name: mariadb
         state: started
         enabled: yes
 
-    - name: Nastavení root hesla pro MariaDB
+    - name: Nastaveni root hesla pro MariaDB
       mysql_user:
         name: root
         password: "{{ vault_mariadb_root_password }}"
@@ -98,14 +84,14 @@
         state: present
       no_log: true
 
-    - name: Vytvoření databáze pro Semaphore
+    - name: Vytvoreni databaze pro Semaphore
       mysql_db:
         name: "{{ semaphore_database }}"
         state: present
         login_user: root
         login_password: "{{ vault_mariadb_root_password }}"
 
-    - name: Vytvoření uživatele MariaDB pro Semaphore
+    - name: Vytvoreni usera MariaDB pro Semaphore
       mysql_user:
         name: "{{ semaphore_db_user }}"
         password: "{{ semaphore_db_password }}"
@@ -116,7 +102,7 @@
       no_log: true
 
     # Instalace Semaphore
-    - name: Vytvoření uživatele Semaphore
+    - name: Vytvoreni usera Semaphore
       user:
         name: "{{ semaphore_user }}"
         groups: sudo
@@ -124,7 +110,7 @@
         create_home: yes
         system: yes
 
-    - name: Vytvoření adresářů pro Semaphore
+    - name: Vytvoreni adresaru pro Semaphore
       file:
         path: "{{ item }}"
         state: directory
@@ -135,13 +121,13 @@
         - "{{ semaphore_config_path }}"
         - "{{ semaphore_db_path }}"
 
-    - name: Stažení Semaphore
+    - name: Stazeni Semaphore z gitu
       get_url:
         url: "https://github.com/ansible-semaphore/semaphore/releases/download/v{{ semaphore_version }}/semaphore_{{ semaphore_version }}_linux_amd64.tar.gz"
         dest: /tmp/semaphore.tar.gz
         mode: '0644'
 
-    - name: Rozbalení Semaphore
+    - name: Rozbaleni Semaphore
       unarchive:
         src: /tmp/semaphore.tar.gz
         dest: /usr/local/bin
@@ -150,12 +136,12 @@
         owner: "{{ semaphore_user }}"
         group: "{{ semaphore_group }}"
 
-    - name: Vyčištění stažených souborů
+    - name: clear tmp
       file:
         path: /tmp/semaphore.tar.gz
         state: absent
 
-    - name: Vytvoření Semaphore konfiguračního souboru
+    - name: Vytvoreni semaphore configraku
       template:
         src: templates/semaphore-config.json.j2
         dest: "{{ semaphore_config_path }}/config.json"
@@ -164,7 +150,7 @@
         mode: '0644'
       notify: restart semaphore
 
-    - name: Nastavení Semaphore
+    - name: Nastaveni Semaphore
       shell: |
         /usr/local/bin/semaphore setup --config {{ semaphore_config_path }}/config.json << EOF
         {{ semaphore_db_user }}
@@ -181,7 +167,7 @@
       become_user: "{{ semaphore_user }}"
       no_log: true
 
-    - name: Vytvoření service souboru pro Semaphore
+    - name: Vytvoreni sluzby pro semaphore
       copy:
         dest: /etc/systemd/system/semaphore.service
         content: |
@@ -206,15 +192,13 @@
         - reload systemd
         - restart semaphore
 
-    - name: Zajištění, že Semaphore služba běží
+    - name: check jestli semaphore bezi
       service:
         name: semaphore
         state: started
         enabled: yes
 
-    # Konfigurace firewallu odstraněna podle požadavku
-
-    - name: Vytvoření příznakového souboru pro dokončení instalace
+    - name: Setup complete file
       file:
         path: "{{ semaphore_config_path }}/.setup_complete"
         state: touch
