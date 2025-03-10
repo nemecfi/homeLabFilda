@@ -1,0 +1,19 @@
+#cloud-config
+hostname: {{ vm_name }}
+users:
+  - name: filda
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - {{ vm_ssh_key }}
+    groups: sudo,adm,staff,docker,libvirt,kvm
+packages:
+  - qemu-guest-agent
+runcmd:
+  - systemctl enable qemu-guest-agent
+  - systemctl start qemu-guest-agent
+  - echo "filda ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/filda
+  - chmod 0440 /etc/sudoers.d/filda
+power_state:
+  mode: reboot
+  message: Restarting after initial cloud-init setup

@@ -1,0 +1,170 @@
+- name: Create kvm vm
+  hosts: all
+  become: true
+  vars:
+    vm_name: "fvm01"
+    vm_memory_mb: 4096
+    vm_vcpus: 2
+    vm_disk_size_gb: 40
+    vm_os_variant: "ubuntu24.04"
+    vm_os_image: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+    vm_ssh_key: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
+    vm_user: "filda"
+    vm_storage_pool: "default"
+    vm_storage_pool_dir: "/opt/kvm/images"
+    
+  tasks:
+    - name: Kontrola balicku, pro virtualizaci
+      apt:
+        name:
+          - qemu-kvm
+          - libvirt-daemon-system
+          - libvirt-clients
+          - bridge-utils
+          - virtinst
+          - cloud-image-utils
+          - genisoimage
+        state: present
+        update_cache: yes
+      # Pro pridani sveho usera  
+      # sudo usermod -a -G kvm filda
+    - name: Kontrola / pridani uzivatele do libvirt skupiny
+      user:
+        name: "{{ ansible_user }}"
+        groups: libvirt
+        append: yes
+
+    - name: Kontrola sluzby libvirtd
+      service:
+        name: libvirtd
+        state: started
+        enabled: yes
+
+    - name: Kontrola jestli storage pool existuje
+      command: virsh pool-info {{ vm_storage_pool }}
+      register: pool_exists
+      failed_when: false
+      changed_when: false
+      
+    - name: Vytvorit xml z templatu
+      template:
+        src: ../templates/storage-pool.xml.j2
+        dest: "/tmp/storage-pool.xml"
+      when: pool_exists.rc != 0
+      
+    - name: vytvorit storage pool
+      command: virsh pool-define /tmp/storage-pool.xml
+      when: pool_exists.rc != 0
+      
+    - name: Nastavit autostart pro storage pool
+      command: virsh pool-autostart {{ vm_storage_pool }}
+      when: pool_exists.rc != 0
+      
+    - name: Spustit storage pool
+      command: virsh pool-start {{ vm_storage_pool }}
+      when: pool_exists.rc != 0 or not pool_exists.stdout is search('State:\s+running')
+
+    - name: Kontrola, jestli image existuje v tempu
+      stat:
+        path: "/tmp/{{ vm_name }}-base.img"
+      register: image_exists
+
+    - name: Stahnou image do tempu
+      get_url:
+        url: "{{ vm_os_image }}"
+        dest: "/tmp/{{ vm_name }}-base.img"
+        mode: '0644'
+      when: not image_exists.stat.exists
+
+    - name: Vytvoreni ciloveho disku
+      copy:
+        src: "/tmp/{{ vm_name }}-base.img"
+        dest: "{{ vm_storage_pool_dir }}/{{ vm_name }}.qcow2"
+        remote_src: yes
+        force: no
+      register: disk_copy
+
+    - name: Resize disku
+      command: qemu-img resize "{{ vm_storage_pool_dir }}/{{ vm_name }}.qcow2" {{ vm_disk_size_gb }}G
+      when: disk_copy.changed
+
+    - name: Vytvoreni cloud-init konfigurace z template
+      template:
+        src: ../templates/cloud-init.yml.j2
+        dest: "/tmp/{{ vm_name }}-cloud-init.yml"
+
+    - name: Generovat ISO pro cloud-init
+      shell: |
+        cloud-localds "/tmp/{{ vm_name }}-cloud-init.iso" "/tmp/{{ vm_name }}-cloud-init.yml"
+      args:
+        creates: "/tmp/{{ vm_name }}-cloud-init.iso"
+
+    - name: zkopirovat cloud-init ISO do storage poolu
+      copy:
+        src: "/tmp/{{ vm_name }}-cloud-init.iso"
+        dest: "{{ vm_storage_pool_dir }}/{{ vm_name }}-cloud-init.iso"
+        remote_src: yes
+
+    - name: Kontrola jestli vm existuje
+      virt:
+        name: "{{ vm_name }}"
+        command: status
+      register: vm_status
+      failed_when: false
+
+    - name: vytvorit kvm s bridge siti
+      command: >
+        virt-install
+        --name {{ vm_name }}
+        --memory {{ vm_memory_mb }}
+        --vcpus {{ vm_vcpus }}
+        --disk path={{ vm_storage_pool_dir }}/{{ vm_name }}.qcow2,format=qcow2
+        --disk path={{ vm_storage_pool_dir }}/{{ vm_name }}-cloud-init.iso,device=cdrom
+        --os-variant {{ vm_os_variant }}
+        --virt-type kvm
+        --graphics none
+        --network type=bridge,source=virbr0,model=virtio
+        --import
+        --noautoconsole
+      when: vm_status.status is not defined or vm_status.status != 'running'
+
+    - name: Pockat na spusteni vm
+      pause:
+        seconds: 30
+      when: vm_status.status is not defined or vm_status.status != 'running'
+
+    - name: Kontrola vm a ziskat domid
+      shell: virsh domid "{{ vm_name }}"
+      register: domid
+      ignore_errors: yes
+
+    - name: Ziskat MAC adresu VM
+      shell: virsh dumpxml "{{ vm_name }}" | grep -A1 '<interface type' | grep -o "mac address='.*'" | cut -d "'" -f2
+      register: vm_mac
+      ignore_errors: yes
+
+    - name: Ziskat IP adresu VM z DHCP leasu
+      shell: virsh net-dhcp-leases default | grep "{{ vm_mac.stdout }}" | awk '{print $5}' | cut -d'/' -f1
+      register: vm_ip
+      ignore_errors: yes
+      retries: 30
+      delay: 5
+      until: vm_ip.stdout != ""
+
+    - name: Vytvoreni dictionary
+      set_fact:
+        vm_summary:
+          hostname: "{{ vm_name }}"
+          ip_address: "{{ vm_ip.stdout | default('neznama') }}"
+          mac_address: "{{ vm_mac.stdout | default('neznama') }}"
+      when: vm_mac.stdout is defined and vm_mac.stdout != ""
+
+    - name: Zobrazit souhrn VM
+      debug:
+        msg: |
+          ===== VM SUMMARY =====
+          HOSTNAME: {{ vm_summary.hostname }}
+          IP: {{ vm_summary.ip_address }}
+          MAC: {{ vm_summary.mac_address }}
+          =======================
+      when: vm_summary is defined
