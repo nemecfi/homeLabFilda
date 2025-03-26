@@ -1,0 +1,33 @@
+#Mouse + config
+set -g mouse on
+set -g default-terminal "xterm-256color"""
+set -g set-clipboard external
+bind -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "xclip -selection clipboard -i"
+#run /home/a57ys3/.config/tmux/plugins/catppuccin/catppuccin-tmux/catppuccin.tmux
+
+#Premapovani na ctrl+space
+#unbind C-b
+#set-option -g prefix C-b
+#bind C-b send-prefix
+#Premapovani na ctrl+space
+unbind C-b
+set-option -g prefix C-a
+bind C-a send-prefix
+
+#Nastaveni vetsiho limitu pro scroll size
+set-option -g history-limit 10000
+
+#Pohub mezi okny ALT + Arrow key
+bind -n M-Left select-pane -L
+bind -n M-Right select-pane -R
+bind -n M-Up select-pane -U
+bind -n M-Down select-pane -D
+
+# Start windows and panes at 1, not 0
+set -g base-index 1
+set -g pane-base-index 1
+set-window-option -g pane-base-index 1
+set-option -g renumber-windows on
+
+#Rebind synchro na prefix key + e
+bind e setw synchronize-panes

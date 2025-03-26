@@ -1,15 +1,32 @@
 ---
-# ansible-playbook -i inventory/kvm_inventory -b -u filda --ask-pass --ask-become-pass playbooks/jump_kvm_setup.yml --vault-password-file vaultPassword --extra-vars "@vault.yml"
+# ansible-playbook -i inventory/kvm_inventory -b -u filda --ask-pass --ask-become-pass playbooks/kvm_setup.yml --vault-password-file vaultPassword --extra-vars "@vault.yml"
+# Pro instalaci Ubuntu: --extra-vars "install_system=ubuntu"
+# Pro instalaci Home Assistant: --extra-vars "install_system=homeassistant"
 - name: Create kvm vm
   hosts: kvm_hypervizor
   become: true
   vars:
-    vm_name: "fvm01"
+    # Vyber systemu k instalaci: 'ubuntu' nebo 'homeassistant'
+    install_system: "homeassistant"  # vychozi hodnota, lze prepsat pomoci --extra-vars
+    
+    vm_name: "fvm02"
     vm_memory_mb: 4096
     vm_vcpus: 2
     vm_disk_size_gb: 40
-    vm_os_variant: "ubuntu24.04"
-    vm_os_image: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+    
+    # Definice obrazu a variant
+    ubuntu_os_variant: "ubuntu24.04"
+    ubuntu_os_image: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+    
+    ha_os_variant: "generic"
+    ha_os_image: "https://github.com/home-assistant/operating-system/releases/download/15.0/haos_ova-15.0.qcow2.xz"
+
+    
+    # Dynamicky nastavene promenne podle zvoleneho systemu
+    vm_os_variant: "{{ ubuntu_os_variant if install_system == 'ubuntu' else ha_os_variant }}"
+    vm_os_image: "{{ ubuntu_os_image if install_system == 'ubuntu' else ha_os_image }}"
+    
+    # Dalsi promenne
     vm_ssh_key: "{{ lookup('file', '~/.ssh/id_ed25519.pub') }}"
     vm_user: "filda"
     vm_storage_pool: "default"
@@ -26,10 +43,12 @@
           - virtinst
           - cloud-image-utils
           - genisoimage
+          - xz-utils  # Pro rozbaleni Home Assistant obrazu
         state: present
         update_cache: yes
       # Pro pridani sveho usera  
       # sudo usermod -a -G kvm filda
+      
     - name: Kontrola / pridani uzivatele do libvirt skupiny
       user:
         name: "{{ ansible_user }}"
@@ -66,17 +85,37 @@
       command: virsh pool-start {{ vm_storage_pool }}
       when: pool_exists.rc != 0 or not pool_exists.stdout is search('State:\s+running')
 
+    # Rozbaleni Home Assistant obrazu pokud je ve formatu xz
+    - name: Kontrola, jestli je obraz ve formatu xz
+      set_fact:
+        is_xz_image: "{{ vm_os_image | regex_search('\\.xz$') }}"
+      when: install_system == 'homeassistant'
+
+    - name: Stahnout komprimovany Home Assistant image
+      get_url:
+        url: "{{ vm_os_image }}"
+        dest: "/tmp/{{ vm_name }}-base.img.xz"
+        mode: '0644'
+      when: install_system == 'homeassistant' and is_xz_image is defined and is_xz_image
+
+    - name: Rozbalit Home Assistant image
+      command: unxz -f "/tmp/{{ vm_name }}-base.img.xz"
+      args:
+        creates: "/tmp/{{ vm_name }}-base.img"
+      when: install_system == 'homeassistant' and is_xz_image is defined and is_xz_image
+
+    # Standardni stahovani nekomprimovaneho obrazu
     - name: Kontrola, jestli image existuje v tempu
       stat:
         path: "/tmp/{{ vm_name }}-base.img"
       register: image_exists
 
-    - name: Stahnou image do tempu
+    - name: Stahnout Ubuntu image do tempu
       get_url:
         url: "{{ vm_os_image }}"
         dest: "/tmp/{{ vm_name }}-base.img"
         mode: '0644'
-      when: not image_exists.stat.exists
+      when: not image_exists.stat.exists and (install_system == 'ubuntu' or (install_system == 'homeassistant' and (is_xz_image is not defined or not is_xz_image)))
 
     - name: Vytvoreni ciloveho disku
       copy:
@@ -90,22 +129,26 @@
       command: qemu-img resize "{{ vm_storage_pool_dir }}/{{ vm_name }}.qcow2" {{ vm_disk_size_gb }}G
       when: disk_copy.changed
 
+    # Vytvoreni cloud-init konfigurace pouze pro Ubuntu
     - name: Vytvoreni cloud-init konfigurace z template
       template:
         src: ../templates/cloud-init.yml.j2
         dest: "/tmp/{{ vm_name }}-cloud-init.yml"
+      when: install_system == 'ubuntu'
 
     - name: Generovat ISO pro cloud-init
       shell: |
         cloud-localds "/tmp/{{ vm_name }}-cloud-init.iso" "/tmp/{{ vm_name }}-cloud-init.yml"
       args:
         creates: "/tmp/{{ vm_name }}-cloud-init.iso"
+      when: install_system == 'ubuntu'
 
     - name: zkopirovat cloud-init ISO do storage poolu
       copy:
         src: "/tmp/{{ vm_name }}-cloud-init.iso"
         dest: "{{ vm_storage_pool_dir }}/{{ vm_name }}-cloud-init.iso"
         remote_src: yes
+      when: install_system == 'ubuntu'
 
     - name: Kontrola jestli vm existuje
       virt:
@@ -114,7 +157,8 @@
       register: vm_status
       failed_when: false
 
-    - name: vytvorit kvm s bridge siti
+    # Vytvorit VM pro Ubuntu
+    - name: vytvorit Ubuntu VM s bridge siti
       command: >
         virt-install
         --name {{ vm_name }}
@@ -125,10 +169,26 @@
         --os-variant {{ vm_os_variant }}
         --virt-type kvm
         --graphics none
-        --network type=bridge,source=virbr0,model=virtio
+        --network type=bridge,source=br0,model=virtio
         --import
         --noautoconsole
-      when: vm_status.status is not defined or vm_status.status != 'running'
+      when: install_system == 'ubuntu' and (vm_status.status is not defined or vm_status.status != 'running')
+
+    # Vytvorit VM pro Home Assistant
+    - name: vytvorit Home Assistant VM s bridge siti
+      command: >
+        virt-install
+        --name {{ vm_name }}
+        --memory {{ vm_memory_mb }}
+        --vcpus {{ vm_vcpus }}
+        --disk path={{ vm_storage_pool_dir }}/{{ vm_name }}.qcow2,format=qcow2
+        --os-variant {{ vm_os_variant }}
+        --virt-type kvm
+        --graphics none
+        --network type=bridge,source=br0,model=virtio
+        --import
+        --noautoconsole
+      when: install_system == 'homeassistant' and (vm_status.status is not defined or vm_status.status != 'running')
 
     - name: Pockat na spusteni vm
       pause:
@@ -159,6 +219,7 @@
           hostname: "{{ vm_name }}"
           ip_address: "{{ vm_ip.stdout | default('neznama') }}"
           mac_address: "{{ vm_mac.stdout | default('neznama') }}"
+          system_type: "{{ 'Ubuntu' if install_system == 'ubuntu' else 'Home Assistant OS' }}"
       when: vm_mac.stdout is defined and vm_mac.stdout != ""
 
     - name: Zobrazit souhrn VM
@@ -166,7 +227,17 @@
         msg: |
           ===== VM SUMMARY =====
           HOSTNAME: {{ vm_summary.hostname }}
+          SYSTEM: {{ vm_summary.system_type }}
           IP: {{ vm_summary.ip_address }}
           MAC: {{ vm_summary.mac_address }}
           =======================
       when: vm_summary is defined
+      
+    - name: Zobrazit informace o pristupu k Home Assistant
+      debug:
+        msg: |
+          ===== HOME ASSISTANT INFO =====
+          Home Assistant bude dostupny na: http://{{ vm_summary.ip_address }}:8123
+          Prvni start muze trvat nekolik minut.
+          ==============================
+      when: install_system == 'homeassistant' and vm_summary is defined
