@@ -1,0 +1,23 @@
+# Server tags mapping
+TAG:ceph=FILDACEP
+TAG:networkworker=FILDANTW
+TAG:bdp=FILDABDP
+TAG:ops=FILDAOPS
+TAG:postgresql=FILDAPSQL
+TAG:psql=FILDAPSQL
+TAG:oracle=FILDARCL
+TAG:rcl=FILDARCL
+TAG:oracle_se=FILDASVC
+TAG:svc=FILDASVC
+TAG:infraservices=FILDAIS
+
+# Virtualization mapping
+VIRT:kvm=FILDAVMK
+VIRT:openstack=FILDAVMO
+VIRT:oracle=FILDAVMB
+VIRT:virtualbox=FILDAVMB
+VIRT:vmware=FILDAVMV
+
+# Criticality mapping
+CRIT:prod=FILDAPROD
+CRIT:test=FILDANPROD
